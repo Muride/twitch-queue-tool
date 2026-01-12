@@ -275,4 +275,8 @@ io.on('connection', (socket) => {
 });
 
 if(fs.existsSync('./tokens.json')) startBot();
-server.listen(3000, () => { console.log('http://localhost:3000 で管理ツール稼働中'); });
+// 【変更後】こう書き換えてください！
+const port = process.env.PORT || 3000;
+server.listen(port, () => {
+    console.log(`管理ツール稼働中: Port ${port}`);
+});
