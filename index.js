@@ -20,6 +20,7 @@ app.use(express.json());
 // --- 設定値 ---
 const CLIENT_ID = process.env.TWITCH_CLIENT_ID;
 const CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET;
+// ★GitHubに上げる際は、ここがRenderのURLになっているか確認してください
 const REDIRECT_URI = 'https://twitch-queue-tool.onrender.com/auth/callback';
 
 let state = {
@@ -32,9 +33,11 @@ let state = {
     channelName: ""
 };
 
+// コンポーネント管理用（ログアウト時に停止するため）
 let chatClientInstance = null;
+let eventSubListenerInstance = null;
 let chatUpdateTimer = null;
-let lastTaikiCommandTime = 0; // !taiki連打防止用
+let lastTaikiCommandTime = 0;
 
 // --- 認証フロー ---
 app.get('/auth_status', (req, res) => {
@@ -99,16 +102,15 @@ async function startBot() {
 
         // 5. EventSub (ポイント検知)
         const listener = new EventSubWsListener({ apiClient });
-        listener.start();
+        await listener.start();
+        eventSubListenerInstance = listener; // 停止用に保持
         console.log("EventSub(ポイント検知) 待機中...");
 
         listener.onChannelRedemptionAdd(userInfo.id, (event) => {
             console.log(`ポイント検知: ${event.rewardTitle} by ${event.userDisplayName}`);
-            
             if (event.rewardTitle === state.rewardTitle) {
                 const userObj = { id: event.userId, name: event.userDisplayName };
                 addUserToWait(userObj);
-                
                 chatClient.say(state.channelName, `${event.userDisplayName} さんの「${event.rewardTitle}」を確認しました！`);
                 broadcast(true);
             }
@@ -123,6 +125,7 @@ async function startBot() {
     } catch (e) {
         console.error("Bot起動失敗:", e);
         state.isConnected = false;
+        // 起動失敗時、トークンがおかしいならファイルを消す処理を入れても良い
     }
 }
 
@@ -135,39 +138,28 @@ async function fetchUserInfoManual(accessToken) {
     return json.data[0];
 }
 
-// --- チャットコマンド制御 ---
 function setupChatEvents(chatClient) {
     chatClient.onMessage((channel, user, text, msg) => {
         const userInfo = { id: user, name: msg.userInfo.displayName };
 
-        // !sanka (一応残していますが、ポイント制にするなら無効化してもOK)
         if (text === '!sanka') {
             addUserToWait(userInfo);
             broadcast(true);
         }
-        
-        // ★VIP専用参加コマンド
         if (text === '!vipsanka') {
-             // isVip: VIPバッジ, isMod: 剣マーク, isBroadcaster: 配信者本人
              if (msg.userInfo.isVip || msg.userInfo.isMod || msg.userInfo.isBroadcaster) {
                  addUserToWait(userInfo);
                  chatClient.say(channel, `👑 VIPの ${userInfo.name} さんが参加希望しました！`);
                  broadcast(true);
              } else {
-                 // VIPじゃない人が打った場合（反応しないか、注意するか。今回はコンソール表示のみ）
                  console.log(`[拒否] ${userInfo.name} はVIPではありません`);
              }
         }
-
-        // ★待機状況確認コマンド
         if (text === '!taiki') {
             const now = Date.now();
-            // 前回の実行から10秒(10000ms)経っていれば実行
             if (now - lastTaikiCommandTime > 10000) {
                 lastTaikiCommandTime = now;
                 sendUpdateToChat();
-            } else {
-                console.log("!taiki クールダウン中");
             }
         }
     });
@@ -272,12 +264,43 @@ io.on('connection', (socket) => {
         state.active = reorder(state.active, newData.active);
         broadcast(true);
     });
+
+    // ★ログアウト処理の追加
+    socket.on('logout', async () => {
+        console.log("ログアウト処理開始...");
+        
+        // 1. 各種接続を切断
+        if (chatClientInstance) {
+            await chatClientInstance.quit();
+            chatClientInstance = null;
+        }
+        if (eventSubListenerInstance) {
+            eventSubListenerInstance.stop();
+            eventSubListenerInstance = null;
+        }
+
+        // 2. トークンファイルの削除
+        if (fs.existsSync('./tokens.json')) {
+            fs.unlinkSync('./tokens.json');
+            console.log("tokens.json を削除しました");
+        }
+
+        // 3. 内部状態のリセット
+        state.isConnected = false;
+        state.channelName = "";
+        state.waiting = [];
+        state.active = [];
+        state.completed = [];
+        
+        // 4. 全員に通知（ログイン画面に戻すため）
+        io.emit('connection_status', { connected: false, channel: "" });
+        console.log("ログアウト完了");
+    });
 });
 
 if(fs.existsSync('./tokens.json')) startBot();
-// 【変更後】こう書き換えてください！
+
 const port = process.env.PORT || 3000;
 server.listen(port, () => {
     console.log(`管理ツール稼働中: Port ${port}`);
-
 });
