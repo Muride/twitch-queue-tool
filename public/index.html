@@ -3,19 +3,27 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Twitch参加型管理ツール v4</title>
+    <title>Twitch参加型管理ツール v5</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.0/Sortable.min.js"></script>
     <style>
         body { font-family: "Helvetica Neue", Arial, sans-serif; padding: 20px; background-color: #f0f2f5; color: #333; }
+        
         #login-screen { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 80vh; }
         .login-btn { background: #9146FF; color: white; padding: 15px 30px; border-radius: 8px; text-decoration: none; font-weight: bold; font-size: 1.2rem; box-shadow: 0 4px 10px rgba(145, 70, 255, 0.4); }
         
         #app-screen { display: none; }
-        header { text-align: center; margin-bottom: 20px; }
-        h1 { color: #9146FF; margin: 0; }
+        
+        header { 
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 20px; padding: 0 20px;
+        }
+        .header-title h1 { color: #9146FF; margin: 0; font-size: 1.5rem; }
         .channel-info { font-size: 0.9rem; color: #666; margin-top: 5px;}
         
-        /* 設定エリア */
+        /* ログアウトボタン */
+        .btn-logout { background-color: #636e72; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; font-size: 0.9rem; }
+        .btn-logout:hover { background-color: #2d3436; }
+
         .controls { 
             background: white; padding: 15px; border-radius: 8px; margin-bottom: 20px; 
             display: flex; gap: 15px; flex-wrap: wrap; align-items: center; justify-content: center;
@@ -54,8 +62,11 @@
 
     <div id="app-screen">
         <header>
-            <h1>参加型管理ツール</h1>
-            <div class="channel-info">接続中: <span id="connected-channel">---</span></div>
+            <div class="header-title">
+                <h1>参加型管理ツール</h1>
+                <div class="channel-info">接続中: <span id="connected-channel">---</span></div>
+            </div>
+            <button class="btn-logout" onclick="logout()">ログアウト</button>
         </header>
 
         <div class="controls">
@@ -63,18 +74,15 @@
                 <input type="text" id="manual-name" placeholder="手動追加 (表示名)">
                 <button class="btn-add" onclick="manualAdd()">追加</button>
             </div>
-
             <div class="control-group">
                 <label>1枠:</label>
                 <input type="number" id="party-size" value="2" min="1" max="10" onchange="updateSettings()">
                 <button id="btn-party-action" class="btn-party" onclick="triggerPartyAction()">パーティーに追加</button>
             </div>
-
             <div class="control-group">
                 <label>参加券名:</label>
                 <input type="text" id="reward-title" value="参加券" placeholder="ポイント名" onchange="updateSettings()">
             </div>
-            
             <button class="btn-delete" onclick="resetAll()">全リセット</button>
         </div>
 
@@ -110,7 +118,6 @@
         });
 
         socket.on('update_all', (data) => {
-            // 設定値の反映（編集中は上書きしないようにフォーカスチェックしても良いが、今回はシンプルに）
             if(document.activeElement.id !== 'party-size') document.getElementById('party-size').value = data.partySize;
             if(document.activeElement.id !== 'reward-title') document.getElementById('reward-title').value = data.rewardTitle;
 
@@ -153,25 +160,28 @@
             });
         }
 
-        // --- アクション ---
         function manualAdd() {
             const name = document.getElementById('manual-name').value;
             if(name) { socket.emit('manual_add', name); document.getElementById('manual-name').value = ''; }
         }
-        
-        // 設定変更（人数 または ポイント名）
         function updateSettings() {
             const size = document.getElementById('party-size').value;
             const title = document.getElementById('reward-title').value;
             socket.emit('update_settings', { size, title });
         }
-
         function triggerPartyAction() { socket.emit('trigger_party'); }
         function moveToActive(id) { socket.emit('move_to_active', id); }
         function moveToWait(id) { socket.emit('move_to_wait', id); }
         function moveToCompleted(id) { socket.emit('move_to_completed', id); }
         function removeUser(id) { if(confirm("削除しますか？")) socket.emit('remove_user', id); }
         function resetAll() { if(confirm("全リセットしますか？")) socket.emit('reset_all'); }
+        
+        // ★ログアウト関数
+        function logout() {
+            if(confirm("ログアウトしますか？\n（接続が切断され、トークン情報がサーバーから削除されます）")) {
+                socket.emit('logout');
+            }
+        }
 
         const waitEl = document.getElementById('waiting-list');
         const activeEl = document.getElementById('active-list');
