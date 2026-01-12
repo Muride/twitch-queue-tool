@@ -20,7 +20,7 @@ app.use(express.json());
 // --- 設定値 ---
 const CLIENT_ID = process.env.TWITCH_CLIENT_ID;
 const CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET;
-const REDIRECT_URI = 'http://localhost:3000/auth/callback';
+const REDIRECT_URI = 'https://twitch-queue-tool.onrender.com/auth/callback';
 
 let state = {
     waiting: [],
@@ -279,4 +279,5 @@ if(fs.existsSync('./tokens.json')) startBot();
 const port = process.env.PORT || 3000;
 server.listen(port, () => {
     console.log(`管理ツール稼働中: Port ${port}`);
+
 });
