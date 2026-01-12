@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Twitch参加型管理ツール v4</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.0/Sortable.min.js"></script>
+    <style>
+        body { font-family: "Helvetica Neue", Arial, sans-serif; padding: 20px; background-color: #f0f2f5; color: #333; }
+        #login-screen { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 80vh; }
+        .login-btn { background: #9146FF; color: white; padding: 15px 30px; border-radius: 8px; text-decoration: none; font-weight: bold; font-size: 1.2rem; box-shadow: 0 4px 10px rgba(145, 70, 255, 0.4); }
+        
+        #app-screen { display: none; }
+        header { text-align: center; margin-bottom: 20px; }
+        h1 { color: #9146FF; margin: 0; }
+        .channel-info { font-size: 0.9rem; color: #666; margin-top: 5px;}
+        
+        /* 設定エリア */
+        .controls { 
+            background: white; padding: 15px; border-radius: 8px; margin-bottom: 20px; 
+            display: flex; gap: 15px; flex-wrap: wrap; align-items: center; justify-content: center;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+        }
+        .control-group { display: flex; align-items: center; gap: 5px; background: #f9f9f9; padding: 5px 10px; border-radius: 5px; border: 1px solid #eee; }
+        .control-group label { font-size: 0.85rem; font-weight: bold; color: #555; }
+        
+        input[type="number"] { width: 40px; padding: 5px; }
+        input[type="text"] { padding: 5px; border: 1px solid #ccc; border-radius: 4px; }
+        
+        .btn-party { background-color: #9146FF; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; font-weight: bold; }
+        .btn-party.swap-mode { background-color: #e056fd; }
+        .btn-add { background-color: #00b894; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; }
+        .btn-delete { background-color: #ff7675; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; color: white;}
+
+        .container { display: flex; gap: 20px; justify-content: center; align-items: flex-start; }
+        .column { background: white; padding: 20px; border-radius: 12px; width: 320px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); min-height: 200px; }
+        .column.completed { opacity: 0.8; background: #e9e9e9; width: 250px; }
+        h2 { margin-top: 0; border-bottom: 2px solid #ddd; font-size: 1.1rem; display: flex; justify-content: space-between; }
+        
+        li.user-card { background: #fff; border: 1px solid #ddd; margin-bottom: 8px; padding: 10px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center; cursor: grab; }
+        .user-info { display: flex; flex-direction: column; }
+        .user-name { font-weight: bold; font-size: 1rem; }
+        .user-id { font-size: 0.75rem; color: #888; }
+        .actions button { border: none; cursor: pointer; padding: 4px 8px; border-radius: 4px; margin-left: 3px; font-size: 0.75rem; color: white; }
+        .btn-promote { background-color: #00b894; }
+        .btn-demote { background-color: #fdcb6e; color: #333 !important; }
+    </style>
+</head>
+<body>
+    <div id="login-screen">
+        <h1 style="margin-bottom: 30px;">Twitch参加型管理ツール</h1>
+        <a href="/auth/login" class="login-btn">📺 Twitchでログインして起動</a>
+    </div>
+
+    <div id="app-screen">
+        <header>
+            <h1>参加型管理ツール</h1>
+            <div class="channel-info">接続中: <span id="connected-channel">---</span></div>
+        </header>
+
+        <div class="controls">
+            <div class="control-group">
+                <input type="text" id="manual-name" placeholder="手動追加 (表示名)">
+                <button class="btn-add" onclick="manualAdd()">追加</button>
+            </div>
+
+            <div class="control-group">
+                <label>1枠:</label>
+                <input type="number" id="party-size" value="2" min="1" max="10" onchange="updateSettings()">
+                <button id="btn-party-action" class="btn-party" onclick="triggerPartyAction()">パーティーに追加</button>
+            </div>
+
+            <div class="control-group">
+                <label>参加券名:</label>
+                <input type="text" id="reward-title" value="参加券" placeholder="ポイント名" onchange="updateSettings()">
+            </div>
+            
+            <button class="btn-delete" onclick="resetAll()">全リセット</button>
+        </div>
+
+        <div class="container">
+            <div class="column">
+                <h2>待機リスト <span id="wait-count">0</span></h2>
+                <ul id="waiting-list"></ul>
+            </div>
+            <div class="column">
+                <h2>🎮 参加中 <span id="active-count">0</span></h2>
+                <ul id="active-list"></ul>
+            </div>
+            <div class="column completed">
+                <h2>✅ 履歴 <span id="completed-count">0</span></h2>
+                <ul id="completed-list"></ul>
+            </div>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+
+        socket.on('connection_status', (status) => {
+            if (status.connected) {
+                document.getElementById('login-screen').style.display = 'none';
+                document.getElementById('app-screen').style.display = 'block';
+                document.getElementById('connected-channel').innerText = status.channel;
+            } else {
+                document.getElementById('login-screen').style.display = 'flex';
+                document.getElementById('app-screen').style.display = 'none';
+            }
+        });
+
+        socket.on('update_all', (data) => {
+            // 設定値の反映（編集中は上書きしないようにフォーカスチェックしても良いが、今回はシンプルに）
+            if(document.activeElement.id !== 'party-size') document.getElementById('party-size').value = data.partySize;
+            if(document.activeElement.id !== 'reward-title') document.getElementById('reward-title').value = data.rewardTitle;
+
+            renderList('waiting-list', data.waiting, 'wait');
+            renderList('active-list', data.active, 'active');
+            renderList('completed-list', data.completed, 'completed');
+
+            document.getElementById('wait-count').innerText = data.waiting.length;
+            document.getElementById('active-count').innerText = data.active.length;
+            document.getElementById('completed-count').innerText = data.completed.length;
+
+            const partyBtn = document.getElementById('btn-party-action');
+            if (data.active.length > 0) {
+                partyBtn.innerText = "🔄 入れ替え (次へ)";
+                partyBtn.classList.add('swap-mode');
+            } else {
+                partyBtn.innerText = "▶ パーティーに追加";
+                partyBtn.classList.remove('swap-mode');
+            }
+        });
+
+        function renderList(elementId, users, type) {
+            const ul = document.getElementById(elementId);
+            ul.innerHTML = ""; 
+            users.forEach((user, index) => {
+                const li = document.createElement('li');
+                li.className = 'user-card';
+                li.setAttribute('data-id', user.id); 
+                let buttons = '';
+                if (type === 'wait') {
+                    buttons = `<div class="actions"><button class="btn-promote" onclick="moveToActive('${user.id}')">参加へ</button><button class="btn-delete" onclick="removeUser('${user.id}')">削除</button></div>`;
+                } else if (type === 'active') {
+                    buttons = `<div class="actions"><button class="btn-demote" onclick="moveToWait('${user.id}')">待機へ</button><button class="btn-delete" onclick="moveToCompleted('${user.id}')">完了へ</button></div>`;
+                } else {
+                    buttons = `<div class="actions"><button class="btn-demote" onclick="moveToWait('${user.id}')">待機へ戻す</button></div>`;
+                }
+                const displayName = user.name !== user.id ? `${user.name}` : user.name;
+                li.innerHTML = `<div class="user-info"><span class="user-name">${index + 1}. ${displayName}</span></div>${buttons}`;
+                ul.appendChild(li);
+            });
+        }
+
+        // --- アクション ---
+        function manualAdd() {
+            const name = document.getElementById('manual-name').value;
+            if(name) { socket.emit('manual_add', name); document.getElementById('manual-name').value = ''; }
+        }
+        
+        // 設定変更（人数 または ポイント名）
+        function updateSettings() {
+            const size = document.getElementById('party-size').value;
+            const title = document.getElementById('reward-title').value;
+            socket.emit('update_settings', { size, title });
+        }
+
+        function triggerPartyAction() { socket.emit('trigger_party'); }
+        function moveToActive(id) { socket.emit('move_to_active', id); }
+        function moveToWait(id) { socket.emit('move_to_wait', id); }
+        function moveToCompleted(id) { socket.emit('move_to_completed', id); }
+        function removeUser(id) { if(confirm("削除しますか？")) socket.emit('remove_user', id); }
+        function resetAll() { if(confirm("全リセットしますか？")) socket.emit('reset_all'); }
+
+        const waitEl = document.getElementById('waiting-list');
+        const activeEl = document.getElementById('active-list');
+        function onDragEnd() {
+            const newWait = Array.from(waitEl.children).map(li => li.getAttribute('data-id'));
+            const newActive = Array.from(activeEl.children).map(li => li.getAttribute('data-id'));
+            socket.emit('update_lists_manual', { waiting: newWait, active: newActive });
+        }
+        new Sortable(waitEl, { group: 'shared', animation: 150, onEnd: onDragEnd });
+        new Sortable(activeEl, { group: 'shared', animation: 150, onEnd: onDragEnd });
+    </script>
+</body>
+</html>
