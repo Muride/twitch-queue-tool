@@ -143,8 +143,7 @@ function setupChatEvents(chatClient) {
         const userInfo = { id: user, name: msg.userInfo.displayName };
 
         if (text === '!sanka') {
-            addUserToWait(userInfo);
-            broadcast(true);
+            
         }
         if (text === '!vipsanka') {
              if (msg.userInfo.isVip || msg.userInfo.isMod || msg.userInfo.isBroadcaster) {
@@ -304,3 +303,4 @@ const port = process.env.PORT || 3000;
 server.listen(port, () => {
     console.log(`管理ツール稼働中: Port ${port}`);
 });
+
