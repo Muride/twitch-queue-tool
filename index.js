@@ -142,9 +142,9 @@ function setupChatEvents(chatClient) {
     chatClient.onMessage((channel, user, text, msg) => {
         const userInfo = { id: user, name: msg.userInfo.displayName };
 
-        if (text === '!sanka') {
-            
-        }
+        // ★ここに会った !sanka のif文を完全に削除しました
+
+        // ★VIP専用参加コマンド
         if (text === '!vipsanka') {
              if (msg.userInfo.isVip || msg.userInfo.isMod || msg.userInfo.isBroadcaster) {
                  addUserToWait(userInfo);
@@ -154,6 +154,8 @@ function setupChatEvents(chatClient) {
                  console.log(`[拒否] ${userInfo.name} はVIPではありません`);
              }
         }
+
+        // ★待機状況確認コマンド
         if (text === '!taiki') {
             const now = Date.now();
             if (now - lastTaikiCommandTime > 10000) {
@@ -303,4 +305,3 @@ const port = process.env.PORT || 3000;
 server.listen(port, () => {
     console.log(`管理ツール稼働中: Port ${port}`);
 });
-
