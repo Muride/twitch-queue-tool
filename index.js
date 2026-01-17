@@ -1,6 +1,7 @@
 require('dotenv').config();
 const fs = require('fs');
 const http = require('http');
+const https = require('https'); // 自身の生存確認用に追加
 const express = require('express');
 const session = require('express-session');
 const { Server } = require("socket.io");
@@ -13,14 +14,15 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
-app.use(session({ secret: 'some-secret-key', resave: false, saveUninitialized: true }));
+// セッション設定：警告防止とメモリ節約
+app.use(session({ secret: 'some-secret-key', resave: false, saveUninitialized: false }));
 app.use(express.static('public'));
 app.use(express.json());
 
 // --- 設定値 ---
 const CLIENT_ID = process.env.TWITCH_CLIENT_ID;
 const CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET;
-// ★GitHubに上げる際は、ここがRenderのURLになっているか確認してください
+// ★RenderのURLになっているか確認してください
 const REDIRECT_URI = 'https://twitch-queue-tool.onrender.com/auth/callback';
 
 let state = {
@@ -33,16 +35,22 @@ let state = {
     channelName: ""
 };
 
-// コンポーネント管理用（ログアウト時に停止するため）
+// インスタンス保持用
 let chatClientInstance = null;
 let eventSubListenerInstance = null;
 let chatUpdateTimer = null;
 let lastTaikiCommandTime = 0;
+let keepAliveInterval = null; // スリープ防止タイマー
 
 // --- 認証フロー ---
 app.get('/auth_status', (req, res) => {
     const hasToken = fs.existsSync('./tokens.json');
     res.json({ loggedIn: hasToken && state.isConnected, channel: state.channelName });
+});
+
+// ★Render生存確認用エンドポイント（ここを叩くとスリープしない）
+app.get('/health', (req, res) => {
+    res.send('OK');
 });
 
 app.get('/auth/login', (req, res) => {
@@ -103,7 +111,7 @@ async function startBot() {
         // 5. EventSub (ポイント検知)
         const listener = new EventSubWsListener({ apiClient });
         await listener.start();
-        eventSubListenerInstance = listener; // 停止用に保持
+        eventSubListenerInstance = listener;
         console.log("EventSub(ポイント検知) 待機中...");
 
         listener.onChannelRedemptionAdd(userInfo.id, (event) => {
@@ -118,6 +126,9 @@ async function startBot() {
 
         setupChatEvents(chatClient);
         
+        // ★ここが重要：スリープ防止機能をONにする
+        startKeepAlive();
+        
         state.isConnected = true;
         console.log(`全システム稼働完了！ Channel: ${state.channelName}`);
         io.emit('connection_status', { connected: true, channel: state.channelName });
@@ -125,8 +136,25 @@ async function startBot() {
     } catch (e) {
         console.error("Bot起動失敗:", e);
         state.isConnected = false;
-        // 起動失敗時、トークンがおかしいならファイルを消す処理を入れても良い
     }
+}
+
+// ★自分自身に5分ごとにアクセスしてRenderを叩き起こす関数
+function startKeepAlive() {
+    if (keepAliveInterval) clearInterval(keepAliveInterval);
+    
+    // 自分のURL（/health）を作成
+    // ※注意: 環境変数などが無いので、REDIRECT_URIからドメインを推測しています
+    const targetUrl = REDIRECT_URI.replace('/auth/callback', '/health'); 
+    console.log(`キープアライブ開始: ${targetUrl} を5分ごとに叩きます`);
+
+    keepAliveInterval = setInterval(() => {
+        https.get(targetUrl, (res) => {
+            // 成功時は特にログを出さない（ログが汚れるため）
+        }).on('error', (e) => {
+            console.error(`Keep-Alive Error: ${e.message}`);
+        });
+    }, 5 * 60 * 1000); // 5分間隔
 }
 
 async function fetchUserInfoManual(accessToken) {
@@ -142,20 +170,14 @@ function setupChatEvents(chatClient) {
     chatClient.onMessage((channel, user, text, msg) => {
         const userInfo = { id: user, name: msg.userInfo.displayName };
 
-        // ★ここに会った !sanka のif文を完全に削除しました
-
-        // ★VIP専用参加コマンド
         if (text === '!vipsanka') {
              if (msg.userInfo.isVip || msg.userInfo.isMod || msg.userInfo.isBroadcaster) {
                  addUserToWait(userInfo);
                  chatClient.say(channel, `👑 VIPの ${userInfo.name} さんが参加希望しました！`);
                  broadcast(true);
-             } else {
-                 console.log(`[拒否] ${userInfo.name} はVIPではありません`);
              }
         }
 
-        // ★待機状況確認コマンド
         if (text === '!taiki') {
             const now = Date.now();
             if (now - lastTaikiCommandTime > 10000) {
@@ -266,11 +288,12 @@ io.on('connection', (socket) => {
         broadcast(true);
     });
 
-    // ★ログアウト処理の追加
+    // ★ログアウト処理（キープアライブも止める）
     socket.on('logout', async () => {
         console.log("ログアウト処理開始...");
         
-        // 1. 各種接続を切断
+        if (keepAliveInterval) clearInterval(keepAliveInterval);
+
         if (chatClientInstance) {
             await chatClientInstance.quit();
             chatClientInstance = null;
@@ -280,20 +303,17 @@ io.on('connection', (socket) => {
             eventSubListenerInstance = null;
         }
 
-        // 2. トークンファイルの削除
         if (fs.existsSync('./tokens.json')) {
             fs.unlinkSync('./tokens.json');
             console.log("tokens.json を削除しました");
         }
 
-        // 3. 内部状態のリセット
         state.isConnected = false;
         state.channelName = "";
         state.waiting = [];
         state.active = [];
         state.completed = [];
         
-        // 4. 全員に通知（ログイン画面に戻すため）
         io.emit('connection_status', { connected: false, channel: "" });
         console.log("ログアウト完了");
     });
