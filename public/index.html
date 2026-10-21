@@ -106,6 +106,13 @@
     <script>
         const socket = io();
 
+        // サーバーの再起動などでログイン状態が切れたとき
+        socket.on('connect_error', (err) => {
+            if (err.message === 'unauthorized') {
+                alert("ログインが切れました。ページを再読み込みしてください。");
+            }
+        });
+
         socket.on('connection_status', (status) => {
             if (status.connected) {
                 document.getElementById('login-screen').style.display = 'none';
