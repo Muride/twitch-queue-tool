@@ -2,6 +2,7 @@ require('dotenv').config();
 const fs = require('fs');
 const http = require('http');
 const https = require('https'); // 自身の生存確認用に追加
+const crypto = require('crypto'); // パスワード照合・ランダム文字列用
 const express = require('express');
 const session = require('express-session');
 const { Server } = require("socket.io");
@@ -10,14 +11,75 @@ const { ChatClient } = require('@twurple/chat');
 const { ApiClient } = require('@twurple/api');
 const { EventSubWsListener } = require('@twurple/eventsub-ws');
 
+// --- 管理画面の合言葉（Renderの環境変数で設定する） ---
+const ADMIN_USER = process.env.ADMIN_USER;
+const ADMIN_PASS = process.env.ADMIN_PASS;
+const SESSION_SECRET = process.env.SESSION_SECRET;
+if (!ADMIN_USER || !ADMIN_PASS || !SESSION_SECRET) {
+    // 設定し忘れたまま「誰でも入れる状態」で動かないよう、起動を止める
+    console.error("ADMIN_USER / ADMIN_PASS / SESSION_SECRET が設定されていません。起動を中止します。");
+    process.exit(1);
+}
+
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
-// セッション設定：警告防止とメモリ節約
-app.use(session({ secret: 'some-secret-key', resave: false, saveUninitialized: false }));
+// Render は手前に中継サーバーがいるので、それを信用する（https判定のため）
+app.set('trust proxy', 1);
+
+// ★Render生存確認用エンドポイント（ここを叩くとスリープしない）※合言葉なしで通す
+app.get('/health', (req, res) => {
+    res.send('OK');
+});
+
+// セッション：一度合言葉が通ったら、しばらく覚えておく
+const sessionMiddleware = session({
+    secret: SESSION_SECRET,
+    resave: false,
+    saveUninitialized: false,
+    cookie: { httpOnly: true, sameSite: 'lax', secure: 'auto', maxAge: 1000 * 60 * 60 * 12 } // 12時間
+});
+app.use(sessionMiddleware);
+
+// 文字列を、かかる時間から中身を推測されない方法で比べる
+function safeEqual(a, b) {
+    const ha = crypto.createHash('sha256').update(String(a)).digest();
+    const hb = crypto.createHash('sha256').update(String(b)).digest();
+    return crypto.timingSafeEqual(ha, hb);
+}
+
+// Basic認証：ID・パスワードが合っている人だけ通す
+function basicAuth(req, res, next) {
+    if (req.session && req.session.isAdmin) return next();
+
+    const [scheme, encoded] = (req.headers.authorization || '').split(' ');
+    if (scheme === 'Basic' && encoded) {
+        const decoded = Buffer.from(encoded, 'base64').toString('utf8');
+        const sep = decoded.indexOf(':');
+        if (sep !== -1) {
+            const userOk = safeEqual(decoded.slice(0, sep), ADMIN_USER);
+            const passOk = safeEqual(decoded.slice(sep + 1), ADMIN_PASS);
+            if (userOk && passOk) {
+                req.session.isAdmin = true;
+                return next();
+            }
+        }
+    }
+    res.set('WWW-Authenticate', 'Basic realm="twitch-queue-tool", charset="UTF-8"');
+    res.status(401).send('認証が必要です');
+}
+app.use(basicAuth);
+
 app.use(express.static('public'));
 app.use(express.json());
+
+// Socket.io（画面とのやりとり）も、合言葉が通った人だけ受け付ける
+io.engine.use(sessionMiddleware);
+io.use((socket, next) => {
+    if (socket.request.session && socket.request.session.isAdmin) return next();
+    next(new Error('unauthorized'));
+});
 
 // --- 設定値 ---
 const CLIENT_ID = process.env.TWITCH_CLIENT_ID;
@@ -48,20 +110,24 @@ app.get('/auth_status', (req, res) => {
     res.json({ loggedIn: hasToken && state.isConnected, channel: state.channelName });
 });
 
-// ★Render生存確認用エンドポイント（ここを叩くとスリープしない）
-app.get('/health', (req, res) => {
-    res.send('OK');
-});
-
 app.get('/auth/login', (req, res) => {
     const scopes = ['chat:read', 'chat:edit', 'channel:read:redemptions'];
-    const url = `https://id.twitch.tv/oauth2/authorize?client_id=${CLIENT_ID}&redirect_uri=${REDIRECT_URI}&response_type=code&scope=${scopes.join('+')}`;
+    // なりすまし防止：ランダムな合言葉を持たせて、戻ってきたときに照合する
+    const oauthState = crypto.randomBytes(16).toString('hex');
+    req.session.oauthState = oauthState;
+    const url = `https://id.twitch.tv/oauth2/authorize?client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&response_type=code&scope=${scopes.join('+')}&state=${oauthState}`;
     res.redirect(url);
 });
 
 app.get('/auth/callback', async (req, res) => {
     const code = req.query.code;
     if (!code) return res.send("Error: No code provided");
+
+    const expected = req.session.oauthState;
+    delete req.session.oauthState;
+    if (!expected || req.query.state !== expected) {
+        return res.status(400).send("認証エラー：もう一度トップページからログインしてください");
+    }
 
     try {
         const tokenData = await exchangeCode(CLIENT_ID, CLIENT_SECRET, code, REDIRECT_URI);
@@ -323,5 +389,5 @@ if(fs.existsSync('./tokens.json')) startBot();
 
 const port = process.env.PORT || 3000;
 server.listen(port, () => {
-    console.log(`管理ツール稼働中: Port ${port}`);
+    console.log(`管理ツール稼働中: Port ${port} / Node ${process.version}`);
 });
